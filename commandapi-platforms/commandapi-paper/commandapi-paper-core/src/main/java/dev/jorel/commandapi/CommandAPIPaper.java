@@ -33,7 +33,7 @@ public class CommandAPIPaper<Source> extends CommandAPIBukkit<Source> {
 	private static CommandAPIPaper<?> paper;
 
 	private boolean isPaperPresent = true;
-	private boolean isFoliaPresent = false;
+	public boolean isFoliaPresent = false;
 	private final Class<? extends CommandSender> feedbackForwardingCommandSender;
 	private final Class<? extends CommandSender> nullCommandSender;
 

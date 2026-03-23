@@ -1,5 +1,6 @@
 package dev.jorel.commandapi;
 
+import com.mojang.brigadier.Command;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.tree.CommandNode;
@@ -160,15 +161,22 @@ public class PaperCommandRegistration<Source> extends CommandRegistrationStrateg
 
 	private void scheduleReloadTask() {
 		if (CommandAPI.canRegister() || !scheduleReloadTask) {
-			// The server is currently starting or a task has already been scheduled
-			// Either way, we don't want to schedule the task now
 			return;
 		}
+
 		scheduleReloadTask = false;
-		Bukkit.getScheduler().scheduleSyncDelayedTask(CommandAPIPaper.getPaper().getPlugin(), () -> {
-			Bukkit.reloadData();
-			scheduleReloadTask = true;
-		}, 1);
+
+		var plugin = CommandAPIPaper.getPaper().getPlugin();
+		var schedulers = new Schedulers(CommandAPIPaper.getPaper().isFoliaPresent);
+
+		// IMPORTANT: switch to correct thread first
+		schedulers.scheduleSync(plugin, () -> {
+			// then delay by 1 tick (same behavior as before)
+			schedulers.scheduleSyncDelayed(plugin, () -> {
+				Bukkit.reloadData();
+				scheduleReloadTask = true;
+			}, 1L);
+		});
 	}
 
 	private String getDescription(String commandName) {
