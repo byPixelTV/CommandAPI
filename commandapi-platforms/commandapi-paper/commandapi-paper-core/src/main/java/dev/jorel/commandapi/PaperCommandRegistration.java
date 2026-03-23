@@ -14,11 +14,8 @@ import org.bukkit.Bukkit;
 import org.bukkit.help.HelpTopic;
 import org.bukkit.plugin.java.JavaPlugin;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 
@@ -31,6 +28,7 @@ public class PaperCommandRegistration<Source> extends CommandRegistrationStrateg
 	// References to necessary methods
 	private final Supplier<CommandDispatcher<Source>> getBrigadierDispatcher;
 	private final Predicate<CommandNode<Source>> isBukkitCommand;
+	private final Queue<UnregisterInformation> unregisterInformationQueue = new ConcurrentLinkedQueue<>();
 
 	private final boolean[] lifecycleEventRegistered = new boolean[2];
 	private final CommandDispatcher<CommandSourceStack> bootstrapDispatcher = new CommandDispatcher<>();
@@ -95,16 +93,12 @@ public class PaperCommandRegistration<Source> extends CommandRegistrationStrateg
 
 	@Override
 	public void unregister(String commandName, boolean unregisterNamespaces, boolean unregisterBukkit) {
-		// Remove nodes from our dispatchers
 		removeBrigadierCommands((RootCommandNode<Source>) bootstrapDispatcher.getRoot(), commandName, unregisterNamespaces,
-			c -> !unregisterBukkit ^ isBukkitCommand.test(c)
-		);
+			c -> !unregisterBukkit ^ isBukkitCommand.test(c));
 		removeBrigadierCommands((RootCommandNode<Source>) pluginDispatcher.getRoot(), commandName, unregisterNamespaces,
-			c -> !unregisterBukkit ^ isBukkitCommand.test(c)
-		);
+			c -> !unregisterBukkit ^ isBukkitCommand.test(c));
 
-		// Remove from real dispatcher when rebuilding commands
-		unregisterInformationList.add(new UnregisterInformation(commandName, unregisterNamespaces, unregisterBukkit));
+		unregisterInformationQueue.offer(new UnregisterInformation(commandName, unregisterNamespaces, unregisterBukkit));
 		scheduleReloadTask();
 	}
 
@@ -128,19 +122,19 @@ public class PaperCommandRegistration<Source> extends CommandRegistrationStrateg
 			registerLifecycleEvent(plugin.getLifecycleManager(), pluginDispatcher);
 
 			plugin.getLifecycleManager().registerEventHandler(LifecycleEvents.COMMANDS.newHandler(event -> {
-				if (!unregisterInformationList.isEmpty()) {
-					for (UnregisterInformation unregisterInformation : unregisterInformationList) {
-						// Remove nodes from the dispatcher
-						removeBrigadierCommands(getBrigadierDispatcher().getRoot(), unregisterInformation.commandName(), unregisterInformation.unregisterNamespaces(),
-							// If we are unregistering a Bukkit command, ONLY unregister BukkitCommandNodes
-							// If we are unregistering a Vanilla command, DO NOT unregister BukkitCommandNodes
-							c -> !unregisterInformation.unregisterBukkit() ^ isBukkitCommand.test(c));
-					}
-
-					// Update the dispatcher file
+				UnregisterInformation info;
+				boolean changed = false;
+				while ((info = unregisterInformationQueue.poll()) != null) {
+					UnregisterInformation finalInfo = info;
+					removeBrigadierCommands(getBrigadierDispatcher().getRoot(), info.commandName(), info.unregisterNamespaces(),
+						c -> !finalInfo.unregisterBukkit() ^ isBukkitCommand.test(c));
+					changed = true;
+				}
+				if (changed) {
 					CommandAPIHandler.getInstance().writeDispatcherToFile();
 				}
 			}).priority(1));
+
 		}
 	}
 
