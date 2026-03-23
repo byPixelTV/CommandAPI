@@ -13,11 +13,8 @@ import org.bukkit.Bukkit;
 import org.bukkit.help.HelpTopic;
 import org.bukkit.plugin.java.JavaPlugin;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 
@@ -35,10 +32,10 @@ public class PaperCommandRegistration<Source> extends CommandRegistrationStrateg
 	private final CommandDispatcher<CommandSourceStack> bootstrapDispatcher = new CommandDispatcher<>();
 	private final CommandDispatcher<CommandSourceStack> pluginDispatcher = new CommandDispatcher<>();
 	private final Set<String> commandsToRemove = new HashSet<>();
+	private final Queue<UnregisterInformation> unregisterInformationQueue = new ConcurrentLinkedQueue<>();
 
 	private boolean canRegister = false;
 	private final List<AbstractCommandAPICommand<?, ?, ?>> bootstrapCommands = new ArrayList<>();
-	private final List<UnregisterInformation> unregisterInformationList = new ArrayList<>();
 
 	private boolean scheduleReloadTask = true;
 
@@ -105,7 +102,7 @@ public class PaperCommandRegistration<Source> extends CommandRegistrationStrateg
 		);
 
 		// Remove from real dispatcher when rebuilding commands
-		unregisterInformationList.add(new UnregisterInformation(commandName, unregisterNamespaces, unregisterBukkit));
+		unregisterInformationQueue.offer(new UnregisterInformation(commandName, unregisterNamespaces, unregisterBukkit));
 		scheduleReloadTask();
 	}
 
@@ -138,16 +135,15 @@ public class PaperCommandRegistration<Source> extends CommandRegistrationStrateg
 			registerLifecycleEvent(plugin.getLifecycleManager(), pluginDispatcher, bootstrap);
 
 			plugin.getLifecycleManager().registerEventHandler(LifecycleEvents.COMMANDS.newHandler(event -> {
-				if (!unregisterInformationList.isEmpty()) {
-					for (UnregisterInformation unregisterInformation : unregisterInformationList) {
-						// Remove nodes from the dispatcher
-						removeBrigadierCommands(getBrigadierDispatcher().getRoot(), unregisterInformation.commandName(), unregisterInformation.unregisterNamespaces(),
-							// If we are unregistering a Bukkit command, ONLY unregister BukkitCommandNodes
-							// If we are unregistering a Vanilla command, DO NOT unregister BukkitCommandNodes
-							c -> !unregisterInformation.unregisterBukkit() ^ isBukkitCommand.test(c));
-					}
-
-					// Update the dispatcher file
+				UnregisterInformation info;
+				boolean changed = false;
+				while ((info = unregisterInformationQueue.poll()) != null) {
+					UnregisterInformation finalInfo = info;
+					removeBrigadierCommands(getBrigadierDispatcher().getRoot(), info.commandName(), info.unregisterNamespaces(),
+						c -> !finalInfo.unregisterBukkit() ^ isBukkitCommand.test(c));
+					changed = true;
+				}
+				if (changed) {
 					CommandAPIHandler.getInstance().writeDispatcherToFile();
 				}
 			}).priority(1));
@@ -185,10 +181,18 @@ public class PaperCommandRegistration<Source> extends CommandRegistrationStrateg
 			return;
 		}
 		scheduleReloadTask = false;
-		Bukkit.getScheduler().scheduleSyncDelayedTask(CommandAPIPaper.getPaper().getPlugin(), () -> {
-			Bukkit.reloadData();
-			scheduleReloadTask = true;
-		}, 1);
+
+		var plugin = CommandAPIPaper.getPaper().getPlugin();
+		var schedulers = new Schedulers(CommandAPIPaper.getPaper().isFoliaPresent);
+
+		// IMPORTANT: switch to correct thread first
+		schedulers.scheduleSync(plugin, () -> {
+			// then delay by 1 tick (same behavior as before)
+			schedulers.scheduleSyncDelayed(plugin, () -> {
+				Bukkit.reloadData();
+				scheduleReloadTask = true;
+			}, 1L);
+		});
 	}
 
 	private String getDescription(String commandName) {
